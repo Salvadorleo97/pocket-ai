@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<title>Pocket AI</title>
+<meta name="theme-color" content="#0e0e12">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Pocket AI">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-192.png">
+<style>
+  :root {
+    --bg: #0e0e12; --panel: #17171d; --panel2: #1f1f27; --line: #2a2a34;
+    --text: #ececf1; --muted: #8e8ea0; --accent: #7c6cf0; --accent2: #a08cff; --danger: #ef6b6b;
+    --safe-top: env(safe-area-inset-top); --safe-bottom: env(safe-area-inset-bottom);
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; }
+  body { display: flex; flex-direction: column; height: 100dvh; overflow: hidden; }
+  button { font: inherit; color: inherit; border: 0; background: none; cursor: pointer; }
+
+  header { display: flex; align-items: center; gap: 10px; padding: calc(var(--safe-top) + 10px) 16px 10px;
+    border-bottom: 1px solid var(--line); background: var(--bg); }
+  header h1 { font-size: 17px; margin: 0; font-weight: 600; flex: 1; }
+  .status { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .dot.on { background: #3ecf8e; }
+  .icon-btn { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; background: var(--panel); }
+  .icon-btn svg { width: 20px; height: 20px; }
+
+  main { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 16px 14px 8px; }
+  .msg { max-width: 88%; margin: 0 0 12px; padding: 10px 14px; border-radius: 18px; white-space: pre-wrap; word-wrap: break-word; }
+  .msg.user { margin-left: auto; background: var(--accent); color: #fff; border-bottom-right-radius: 6px; }
+  .msg.ai { background: var(--panel); border-bottom-left-radius: 6px; }
+  .msg.ai pre { background: #0b0b0f; padding: 10px; border-radius: 10px; overflow-x: auto; white-space: pre; font-size: 13px; margin: 6px 0; }
+  .msg.ai code { font-family: ui-monospace, Menlo, monospace; font-size: 0.9em; }
+  .msg.ai :not(pre) > code { background: #0b0b0f; padding: 1px 5px; border-radius: 5px; }
+  .typing::after { content: "▍"; animation: blink 1s steps(1) infinite; color: var(--accent2); }
+  @keyframes blink { 50% { opacity: 0; } }
+  .empty { text-align: center; color: var(--muted); margin-top: 22vh; padding: 0 30px; }
+  .empty img { width: 64px; height: 64px; border-radius: 16px; margin-bottom: 10px; }
+
+  footer { padding: 8px 12px calc(var(--safe-bottom) + 8px); border-top: 1px solid var(--line); background: var(--bg); }
+  .composer { display: flex; align-items: flex-end; gap: 8px; background: var(--panel); border-radius: 22px; padding: 6px 6px 6px 14px; }
+  textarea { flex: 1; resize: none; border: 0; outline: 0; background: transparent; color: var(--text);
+    font: inherit; font-size: 16px; max-height: 140px; padding: 6px 0; }
+  .send { width: 36px; height: 36px; border-radius: 50%; background: var(--accent); display: grid; place-items: center; flex-shrink: 0; }
+  .send:disabled { opacity: 0.35; }
+  .send svg { width: 18px; height: 18px; }
+
+  /* Setup screen */
+  .setup { flex: 1; overflow-y: auto; padding: calc(var(--safe-top) + 28px) 20px calc(var(--safe-bottom) + 24px); }
+  .setup .logo { width: 72px; height: 72px; border-radius: 18px; display: block; margin: 0 auto 14px; }
+  .setup h2 { text-align: center; margin: 0 0 6px; font-size: 24px; }
+  .setup p.lead { text-align: center; color: var(--muted); margin: 0 0 22px; }
+  .model { display: block; width: 100%; text-align: left; background: var(--panel); border: 2px solid transparent;
+    border-radius: 14px; padding: 12px 14px; margin-bottom: 10px; }
+  .model.sel { border-color: var(--accent); }
+  .model b { display: block; }
+  .model span { color: var(--muted); font-size: 14px; }
+  .model .tag { float: right; font-size: 12px; color: var(--accent2); }
+  .primary { width: 100%; padding: 14px; border-radius: 14px; background: var(--accent); color: #fff; font-weight: 600; margin-top: 8px; }
+  .primary:disabled { opacity: 0.5; }
+  .bar { height: 8px; background: var(--panel2); border-radius: 4px; overflow: hidden; margin: 18px 0 8px; }
+  .bar > div { height: 100%; width: 0; background: linear-gradient(90deg, var(--accent), var(--accent2)); transition: width .3s; }
+  .note { color: var(--muted); font-size: 13px; text-align: center; }
+  .warn { background: #2a1a1a; color: #ffb4b4; border-radius: 12px; padding: 12px 14px; font-size: 14px; margin-bottom: 14px; }
+
+  /* Menu sheet */
+  .sheet-bg { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: none; z-index: 10; }
+  .sheet { position: fixed; left: 0; right: 0; bottom: 0; background: var(--panel); border-radius: 20px 20px 0 0;
+    padding: 10px 12px calc(var(--safe-bottom) + 12px); z-index: 11; transform: translateY(100%); transition: transform .25s; }
+  .sheet.open { transform: none; }
+  .sheet button { display: block; width: 100%; text-align: left; padding: 14px; border-radius: 12px; }
+  .sheet button:active { background: var(--panel2); }
+  .sheet .danger { color: var(--danger); }
+  .sheet .info { color: var(--muted); font-size: 13px; padding: 8px 14px 4px; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<!-- Setup / download screen -->
+<section id="setup" class="setup">
+  <img class="logo" src="icon-512.png" alt="">
+  <h2>Pocket AI</h2>
+  <p class="lead">An AI that lives on your iPhone. Download a brain once on Wi‑Fi, then chat anywhere with no internet.</p>
+  <div id="setupWarn" class="warn hidden"></div>
+  <div id="modelList"></div>
+  <button id="downloadBtn" class="primary" disabled>Loading…</button>
+  <div id="progressWrap" class="hidden">
+    <div class="bar"><div id="bar"></div></div>
+    <div id="progressText" class="note"></div>
+  </div>
+  <p class="note" style="margin-top:18px">Keep the app open while it downloads. Everything stays on your phone.</p>
+</section>
+
+<!-- Chat screen -->
+<header id="chatHeader" class="hidden">
+  <div style="flex:1">
+    <h1>Pocket AI</h1>
+    <div class="status"><span id="dot" class="dot"></span><span id="statusText">Starting…</span></div>
+  </div>
+  <button class="icon-btn" id="newBtn" aria-label="New chat">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+  </button>
+  <button class="icon-btn" id="menuBtn" aria-label="Menu">
+    <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+  </button>
+</header>
+<main id="chat" class="hidden"></main>
+<footer id="chatFooter" class="hidden">
+  <div class="composer">
+    <textarea id="input" rows="1" placeholder="Message" enterkeyhint="send"></textarea>
+    <button class="send" id="sendBtn" disabled aria-label="Send">
+      <svg id="sendIcon" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+    </button>
+  </div>
+</footer>
+
+<div class="sheet-bg" id="sheetBg"></div>
+<div class="sheet" id="sheet">
+  <div class="info" id="sheetInfo"></div>
+  <button id="switchBtn">Switch AI model</button>
+  <button id="clearBtn">Clear this chat</button>
+  <button id="deleteBtn" class="danger">Delete downloaded model (frees space)</button>
+  <button id="closeSheet">Cancel</button>
+</div>
+
+<script type="module">
+// ---------- Offline support ----------
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+
+const $ = (id) => document.getElementById(id);
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+
+const SYSTEM = "You are Pocket AI, a friendly, helpful assistant running offline on the user's iPhone. Keep answers clear and fairly short unless asked for detail. If you're not sure about a fact, say so.";
+
+// Model choices, smallest to largest. f16 versions are faster; f32 is the fallback.
+const TIERS = [
+  { key: "best",   name: "Best · Qwen3 1.7B", desc: "Smartest model that runs reliably on your phone", size: "~1.1 GB", rec: true,
+    ids: ["Qwen3-1.7B-q4f16_1-MLC", "Qwen3-1.7B-q4f32_1-MLC", "Qwen2.5-1.5B-Instruct-q4f16_1-MLC", "Qwen2.5-1.5B-Instruct-q4f32_1-MLC"] },
+  { key: "small",  name: "Fast · Llama 3.2 1B", desc: "Quicker replies, a bit less clever", size: "~700 MB",
+    ids: ["Llama-3.2-1B-Instruct-q4f16_1-MLC", "Llama-3.2-1B-Instruct-q4f32_1-MLC"] },
+  { key: "tiny",   name: "Tiny · Qwen3 0.6B", desc: "Fastest, simplest answers, smallest download", size: "~500 MB",
+    ids: ["Qwen3-0.6B-q4f16_1-MLC", "Qwen3-0.6B-q4f32_1-MLC", "Qwen2.5-0.5B-Instruct-q4f16_1-MLC"] },
+  { key: "exp",    name: "Experimental · Qwen3 4B", desc: "Smartest, but will likely crash on iPhone", size: "~2.5 GB",
+    ids: ["Qwen3-4B-q4f16_1-MLC", "Qwen3-4B-q4f32_1-MLC"] },
+];
+const isQwen3 = (id) => /^Qwen3-/.test(id || "");
+// Qwen3 can "think out loud" in <think> tags. Hide that and show only the answer.
+function stripThink(s) {
+  s = s.replace(/<think>[\s\S]*?<\/think>\s*/g, "");
+  const open = s.indexOf("<think>");
+  return open >= 0 ? s.slice(0, open) : s;
+}
+
+let webllm, engine, hasF16 = false, available = [], selected = null, busy = false;
+let messages = store.get("pocketai.chat", []);
+
+function setupWarn(t) { const w = $("setupWarn"); w.textContent = t; w.classList.remove("hidden"); }
+
+async function boot() {
+  if (!navigator.gpu) {
+    setupWarn("This iPhone's browser doesn't have WebGPU turned on, which the AI needs. Make sure you're on iOS 26 or later and opened this in Safari.");
+    $("downloadBtn").textContent = "Not supported here";
+    return;
+  }
+  try {
+    const adapter = await navigator.gpu.requestAdapter();
+    hasF16 = !!adapter && adapter.features.has("shader-f16");
+  } catch {}
+
+  try {
+    webllm = await import("https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2/+esm");
+  } catch (e) {
+    setupWarn("Couldn't load the AI engine. The first time you open the app you need internet. After that it works offline.");
+    $("downloadBtn").textContent = "Try again";
+    $("downloadBtn").disabled = false;
+    $("downloadBtn").onclick = () => location.reload();
+    return;
+  }
+
+  const known = new Set(webllm.prebuiltAppConfig.model_list.map((m) => m.model_id));
+  available = TIERS.map((t) => {
+    const order = hasF16 ? t.ids : [...t.ids].reverse();
+    const id = order.find((i) => known.has(i));
+    return id ? { ...t, id } : null;
+  }).filter(Boolean);
+
+  // If a model was downloaded before, go straight to chat (works offline).
+  const saved = store.get("pocketai.model", null);
+  if (saved && available.find((m) => m.id === saved)) {
+    let cached = false;
+    try { cached = await webllm.hasModelInCache(saved); } catch {}
+    if (cached) { startChatUI(); await loadModel(saved, true); return; }
+  }
+  renderModelList();
+}
+
+function renderModelList() {
+  const list = $("modelList");
+  list.innerHTML = "";
+  if (!selected) selected = (available.find((m) => m.rec) || available[0])?.id;
+  for (const m of available) {
+    const b = document.createElement("button");
+    b.className = "model" + (m.id === selected ? " sel" : "");
+    b.innerHTML = `${m.rec ? '<span class="tag">Recommended</span>' : ""}<b>${m.name} · ${m.size}</b><span>${m.desc}</span>`;
+    b.onclick = () => { selected = m.id; renderModelList(); };
+    list.appendChild(b);
+  }
+  const btn = $("downloadBtn");
+  btn.disabled = !selected;
+  btn.textContent = "Download & start";
+  btn.onclick = () => loadModel(selected, false);
+}
+
+async function loadModel(id, fromCache) {
+  busy = true;
+  const btn = $("downloadBtn");
+  btn.disabled = true;
+  btn.textContent = fromCache ? "Loading…" : "Downloading…";
+  $("progressWrap").classList.remove("hidden");
+  setStatus(false, "Loading AI…");
+  try {
+    if (engine) { try { await engine.unload(); } catch {} }
+    engine = await webllm.CreateMLCEngine(id, {
+      initProgressCallback: (r) => {
+        const pct = Math.round((r.progress || 0) * 100);
+        $("bar").style.width = pct + "%";
+        $("progressText").textContent = `${pct}% · ${friendly(r.text)}`;
+        setStatus(false, `Loading AI… ${pct}%`);
+      },
+    });
+    store.set("pocketai.model", id);
+    startChatUI();
+    const m = available.find((x) => x.id === id);
+    setStatus(true, `${m ? m.name : "AI"} ready · works offline`);
+  } catch (e) {
+    console.error(e);
+    showSetup();
+    const msg = String(e && e.message || e);
+    setupWarn(/memory|out of|device lost|OOM/i.test(msg)
+      ? "Your iPhone ran out of memory for that model. Close other apps or pick a smaller one."
+      : (navigator.onLine ? "Something went wrong loading the AI: " + msg : "You're offline and this model hasn't been downloaded yet. Connect to Wi‑Fi to download it."));
+    renderModelList();
+  } finally {
+    busy = false;
+    updateSend();
+  }
+}
+
+function friendly(t = "") {
+  if (/Fetching|Loading model from cache|cache/i.test(t)) {
+    const mb = t.match(/(\d+)MB/); return mb ? `${mb[1]} MB done` : "Loading files";
+  }
+  if (/shader|GPU|compil/i.test(t)) return "Warming up";
+  return "Preparing";
+}
+
+// ---------- Screens ----------
+function showSetup() {
+  $("setup").classList.remove("hidden");
+  for (const id of ["chatHeader", "chat", "chatFooter"]) $(id).classList.add("hidden");
+}
+function startChatUI() {
+  $("setup").classList.add("hidden");
+  for (const id of ["chatHeader", "chat", "chatFooter"]) $(id).classList.remove("hidden");
+  renderChat();
+}
+function setStatus(on, text) { $("dot").classList.toggle("on", on); $("statusText").textContent = text; }
+
+// ---------- Chat rendering ----------
+function esc(s) { return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+function md(s) {
+  const parts = s.split(/```/);
+  return parts.map((p, i) => {
+    if (i % 2) return `<pre><code>${esc(p.replace(/^[a-zA-Z0-9+-]*\n/, ""))}</code></pre>`;
+    return esc(p).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+  }).join("");
+}
+function renderChat() {
+  const chat = $("chat");
+  chat.innerHTML = "";
+  if (!messages.length) {
+    chat.innerHTML = `<div class="empty"><img src="icon-192.png" alt=""><div>Ask me anything. I run entirely on your phone, so nothing you type leaves it.</div></div>`;
+    return;
+  }
+  for (const m of messages) addBubble(m.role, m.content);
+  chat.scrollTop = chat.scrollHeight;
+}
+function addBubble(role, text) {
+  const d = document.createElement("div");
+  d.className = "msg " + (role === "user" ? "user" : "ai");
+  if (role === "user") d.textContent = text; else d.innerHTML = md(text);
+  $("chat").appendChild(d);
+  return d;
+}
+
+// ---------- Sending ----------
+const input = $("input"), sendBtn = $("sendBtn");
+let generating = false;
+
+function updateSend() {
+  sendBtn.disabled = !generating && (!engine || busy || !input.value.trim());
+  $("sendIcon").innerHTML = generating
+    ? '<rect x="7" y="7" width="10" height="10" rx="2" fill="#fff" stroke="none"/>'
+    : '<path d="M12 19V5M5 12l7-7 7 7"/>';
+}
+input.addEventListener("input", () => {
+  input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 140) + "px"; updateSend();
+});
+input.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (!sendBtn.disabled) sendBtn.click(); }
+});
+sendBtn.onclick = async () => {
+  if (generating) { try { engine.interruptGenerate(); } catch {} return; }
+  const text = input.value.trim();
+  if (!text || !engine) return;
+  input.value = ""; input.style.height = "auto";
+  if (!messages.length) $("chat").innerHTML = "";
+  messages.push({ role: "user", content: text });
+  addBubble("user", text);
+  const bubble = addBubble("assistant", "");
+  bubble.classList.add("typing");
+  $("chat").scrollTop = $("chat").scrollHeight;
+
+  generating = true; updateSend();
+  let reply = "";
+  try {
+    // Only send recent messages so we stay within the model's memory.
+    const recent = messages.slice(-12);
+    const modelId = store.get("pocketai.model", "");
+    const req = {
+      messages: [{ role: "system", content: SYSTEM }, ...recent],
+      stream: true, temperature: 0.7, max_tokens: 1024,
+    };
+    let stream;
+    if (isQwen3(modelId)) {
+      // Ask Qwen3 to answer directly instead of thinking first (faster on a phone).
+      try { stream = await engine.chat.completions.create({ ...req, extra_body: { enable_thinking: false } }); }
+      catch { stream = await engine.chat.completions.create(req); }
+    } else {
+      stream = await engine.chat.completions.create(req);
+    }
+    let raw = "";
+    for await (const chunk of stream) {
+      const delta = chunk.choices?.[0]?.delta?.content || "";
+      if (delta) {
+        raw += delta;
+        reply = stripThink(raw).trimStart();
+        bubble.innerHTML = reply ? md(reply) : "<i style='color:var(--muted)'>Thinking…</i>";
+        const c = $("chat");
+        if (c.scrollHeight - c.scrollTop - c.clientHeight < 120) c.scrollTop = c.scrollHeight;
+      }
+    }
+  } catch (e) {
+    console.error(e);
+    if (!reply) reply = "Sorry, something went wrong. If this keeps happening, try a smaller model from the ⋯ menu.";
+  }
+  bubble.classList.remove("typing");
+  bubble.innerHTML = md(reply || "…");
+  messages.push({ role: "assistant", content: reply });
+  store.set("pocketai.chat", messages);
+  generating = false; updateSend();
+};
+
+// ---------- Menu ----------
+function openSheet() {
+  const m = available.find((x) => x.id === store.get("pocketai.model", ""));
+  $("sheetInfo").textContent = m ? `Using: ${m.name} model (${m.size})` : "";
+  $("sheetBg").style.display = "block"; $("sheet").classList.add("open");
+}
+function closeSheet() { $("sheetBg").style.display = "none"; $("sheet").classList.remove("open"); }
+$("menuBtn").onclick = openSheet;
+$("sheetBg").onclick = closeSheet;
+$("closeSheet").onclick = closeSheet;
+$("newBtn").onclick = () => { if (generating) return; messages = []; store.set("pocketai.chat", messages); renderChat(); };
+$("clearBtn").onclick = () => { closeSheet(); $("newBtn").click(); };
+$("switchBtn").onclick = () => {
+  closeSheet(); if (generating) return;
+  selected = store.get("pocketai.model", selected);
+  $("progressWrap").classList.add("hidden"); $("setupWarn").classList.add("hidden");
+  showSetup(); renderModelList();
+};
+let deleteArmed = false;
+$("deleteBtn").onclick = async () => {
+  if (!deleteArmed) { deleteArmed = true; $("deleteBtn").textContent = "Tap again to delete (you'll need Wi‑Fi to re-download)"; return; }
+  deleteArmed = false; $("deleteBtn").textContent = "Delete downloaded model (frees space)";
+  closeSheet();
+  const id = store.get("pocketai.model", null);
+  try { if (engine) await engine.unload(); } catch {}
+  engine = null;
+  try { if (id) await webllm.deleteModelAllInfoInCache(id); } catch {}
+  store.set("pocketai.model", null);
+  $("progressWrap").classList.add("hidden");
+  showSetup(); renderModelList();
+};
+
+boot();
+</script>
+</body>
+</html>
