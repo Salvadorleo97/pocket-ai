@@ -1,6 +1,6 @@
 // Pocket AI service worker: keeps the app itself available offline.
 // The AI model files are cached separately by the WebLLM library.
-const CACHE = "pocket-ai-v2";
+const CACHE = "pocket-ai-v3";
 const SHELL = ["./", "./index.html", "./manifest.json", "./icon-180.png", "./icon-192.png", "./icon-512.png"];
 
 self.addEventListener("install", (e) => {

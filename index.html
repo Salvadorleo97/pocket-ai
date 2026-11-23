@@ -126,6 +126,7 @@
 <div class="sheet-bg" id="sheetBg"></div>
 <div class="sheet" id="sheet">
   <div class="info" id="sheetInfo"></div>
+  <button id="safeBtn">Safe mode: off</button>
   <button id="switchBtn">Switch AI model</button>
   <button id="clearBtn">Clear this chat</button>
   <button id="deleteBtn" class="danger">Delete downloaded model (frees space)</button>
@@ -153,9 +154,18 @@ const TIERS = [
     ids: ["Llama-3.2-1B-Instruct-q4f16_1-MLC", "Llama-3.2-1B-Instruct-q4f32_1-MLC"] },
   { key: "tiny",   name: "Tiny · Qwen3 0.6B", desc: "Fastest, simplest answers, smallest download", size: "~500 MB",
     ids: ["Qwen3-0.6B-q4f16_1-MLC", "Qwen3-0.6B-q4f32_1-MLC", "Qwen2.5-0.5B-Instruct-q4f16_1-MLC"] },
-  { key: "exp",    name: "Experimental · Qwen3 4B", desc: "Smartest, but will likely crash on iPhone", size: "~2.5 GB",
-    ids: ["Qwen3-4B-q4f16_1-MLC", "Qwen3-4B-q4f32_1-MLC"] },
 ];
+
+// Memory settings. iOS kills web apps that use too much memory, so we keep the
+// AI's working memory small. If the app got killed mid-reply last time, we
+// automatically drop to "safe mode", which uses even less.
+const NORMAL = { context_window_size: 2048, prefill_chunk_size: 256 };
+const SAFE   = { context_window_size: 1024, prefill_chunk_size: 64 };
+let safeMode = !!store.get("pocketai.safe", false);
+let crashedLastTime = !!store.get("pocketai.inflight", false);
+if (crashedLastTime) { safeMode = true; store.set("pocketai.safe", true); store.set("pocketai.inflight", false); }
+const memOpts = () => (safeMode ? SAFE : NORMAL);
+const historyBudget = () => (safeMode ? 1500 : 3500); // characters of past chat sent to the AI
 const isQwen3 = (id) => /^Qwen3-/.test(id || "");
 // Qwen3 can "think out loud" in <think> tags. Hide that and show only the answer.
 function stripThink(s) {
@@ -240,11 +250,12 @@ async function loadModel(id, fromCache) {
         $("progressText").textContent = `${pct}% · ${friendly(r.text)}`;
         setStatus(false, `Loading AI… ${pct}%`);
       },
-    });
+    }, memOpts());
     store.set("pocketai.model", id);
     startChatUI();
     const m = available.find((x) => x.id === id);
-    setStatus(true, `${m ? m.name : "AI"} ready · works offline`);
+    setStatus(true, `${m ? m.name.split(" · ")[0] : "AI"} ready${safeMode ? " · safe mode" : ""} · works offline`);
+    if (crashedLastTime) { crashedLastTime = false; notice("The app closed during the last reply, probably from running out of memory. I've switched to safe mode, which uses less memory. Try again."); }
   } catch (e) {
     console.error(e);
     showSetup();
@@ -276,6 +287,16 @@ function startChatUI() {
   $("setup").classList.add("hidden");
   for (const id of ["chatHeader", "chat", "chatFooter"]) $(id).classList.remove("hidden");
   renderChat();
+}
+function notice(text) {
+  const d = document.createElement("div");
+  d.className = "msg ai";
+  d.style.cssText = "background:#2a2414;color:#ffd98a;font-size:14px";
+  d.textContent = text;
+  const chat = $("chat");
+  if (!messages.length) chat.innerHTML = "";
+  chat.appendChild(d);
+  chat.scrollTop = chat.scrollHeight;
 }
 function setStatus(on, text) { $("dot").classList.toggle("on", on); $("statusText").textContent = text; }
 
@@ -337,13 +358,22 @@ sendBtn.onclick = async () => {
   generating = true; updateSend();
   let reply = "";
   try {
-    // Only send recent messages so we stay within the model's memory.
-    const recent = messages.slice(-12);
+    // Only send as much recent chat as fits in the AI's (small) working memory.
+    const recent = [];
+    let chars = 0;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      chars += messages[i].content.length;
+      if (recent.length && chars > historyBudget()) break;
+      recent.unshift(messages[i]);
+    }
+    if (recent[0] && recent[0].role === "assistant") recent.shift();
     const modelId = store.get("pocketai.model", "");
     const req = {
       messages: [{ role: "system", content: SYSTEM }, ...recent],
-      stream: true, temperature: 0.7, max_tokens: 1024,
+      stream: true, temperature: 0.7, max_tokens: safeMode ? 384 : 640,
     };
+    // Leave a marker: if iOS kills the app mid-reply, we'll know on the next launch.
+    store.set("pocketai.inflight", true);
     let stream;
     if (isQwen3(modelId)) {
       // Ask Qwen3 to answer directly instead of thinking first (faster on a phone).
@@ -365,8 +395,15 @@ sendBtn.onclick = async () => {
     }
   } catch (e) {
     console.error(e);
-    if (!reply) reply = "Sorry, something went wrong. If this keeps happening, try a smaller model from the ⋯ menu.";
+    const msg = String((e && e.message) || e).slice(0, 300);
+    if (!reply) {
+      reply = /lost|device|memory|OOM|buffer/i.test(msg)
+        ? "I ran out of memory. Close the app fully (swipe it away), reopen it, and turn on Safe mode in the ⋯ menu."
+        : "Sorry, something went wrong.";
+      reply += "\n\nError details: `" + msg.replace(/`/g, "'") + "`";
+    }
   }
+  store.set("pocketai.inflight", false);
   bubble.classList.remove("typing");
   bubble.innerHTML = md(reply || "…");
   messages.push({ role: "assistant", content: reply });
@@ -377,7 +414,8 @@ sendBtn.onclick = async () => {
 // ---------- Menu ----------
 function openSheet() {
   const m = available.find((x) => x.id === store.get("pocketai.model", ""));
-  $("sheetInfo").textContent = m ? `Using: ${m.name} model (${m.size})` : "";
+  $("sheetInfo").textContent = m ? `Using: ${m.name} (${m.size})` : "";
+  $("safeBtn").textContent = `Safe mode: ${safeMode ? "on (uses less memory, shorter replies)" : "off"}`;
   $("sheetBg").style.display = "block"; $("sheet").classList.add("open");
 }
 function closeSheet() { $("sheetBg").style.display = "none"; $("sheet").classList.remove("open"); }
@@ -385,7 +423,13 @@ $("menuBtn").onclick = openSheet;
 $("sheetBg").onclick = closeSheet;
 $("closeSheet").onclick = closeSheet;
 $("newBtn").onclick = () => { if (generating) return; messages = []; store.set("pocketai.chat", messages); renderChat(); };
-$("clearBtn").onclick = () => { closeSheet(); $("newBtn").click(); };
+$("safeBtn").onclick = async () => {
+  closeSheet(); if (generating || busy) return;
+  safeMode = !safeMode; store.set("pocketai.safe", safeMode);
+  const id = store.get("pocketai.model", null);
+  if (id) await loadModel(id, true); // reload the AI with the new memory settings
+};
+$("clearBtn").onclick =() => { closeSheet(); $("newBtn").click(); };
 $("switchBtn").onclick = () => {
   closeSheet(); if (generating) return;
   selected = store.get("pocketai.model", selected);
