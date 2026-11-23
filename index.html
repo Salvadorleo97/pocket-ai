@@ -126,10 +126,11 @@
 <div class="sheet-bg" id="sheetBg"></div>
 <div class="sheet" id="sheet">
   <div class="info" id="sheetInfo"></div>
-  <button id="adultBtn">🌶️ Adult mode: off</button>
-  <button id="safeBtn">Safe mode: off</button>
   <button id="switchBtn">Switch AI model</button>
   <button id="clearBtn">Clear this chat</button>
+  <div class="info" style="padding-top:14px">Settings</div>
+  <button id="safeBtn">Safe mode: off</button>
+  <button id="unfilteredBtn">Unfiltered mode: off</button>
   <button id="deleteBtn" class="danger">Delete downloaded model (frees space)</button>
   <button id="closeSheet">Cancel</button>
 </div>
@@ -175,9 +176,10 @@ const modelById = (id) => MODELS.find((m) => m.id === id);
 
 // ---------- Personality ----------
 const SYSTEM = "You are Pocket AI, a friendly, helpful assistant running offline on the user's iPhone. Keep answers clear and fairly short unless asked for detail. If you're not sure about a fact, say so.";
-const SYSTEM_ADULT = "You are Pocket AI, a private assistant running offline on the user's own iPhone. The user is an adult (18+) and has switched on adult mode. In this mode you're casual, cheeky and flirty, you can swear, and you can talk about mature and romantic or sexual topics with the user and play along with adult roleplay when they ask. Everyone in any roleplay or story is an adult; never involve anyone under 18. Keep being helpful with normal questions too.";
-let adultMode = !!store.get("pocketai.adult", false);
-const systemPrompt = () => (adultMode ? SYSTEM_ADULT : SYSTEM);
+const SYSTEM_UNFILTERED = "You are Pocket AI, running privately and offline on the user's own iPhone. Unfiltered mode is on, so talk like a straight-talking mate: blunt, casual and honest. Swearing is fine. Skip disclaimers, lectures, moralising and 'as an AI' lines, give your real opinion when asked, and discuss mature or edgy topics frankly instead of dodging them. Keep answers useful. Don't help with anything that could seriously hurt someone, and keep things non-explicit.";
+let unfiltered = !!store.get("pocketai.unfiltered", false);
+try { localStorage.removeItem("pocketai.adult"); } catch {}
+const systemPrompt = () => (unfiltered ? SYSTEM_UNFILTERED : SYSTEM);
 
 // ---------- Memory settings ----------
 // If iOS kills the app mid-reply, we notice on the next launch and switch to safe mode.
@@ -295,7 +297,6 @@ async function loadModel(id, fromCache) {
 function refreshStatus() {
   const m = modelById(loadedId);
   const bits = [`${m ? m.name.split(" · ")[0] : "AI"} ready`];
-  if (adultMode) bits.push("🌶️ adult");
   if (safeMode) bits.push("safe mode");
   bits.push("offline");
   setStatus(!!loadedId, bits.join(" · "));
@@ -407,7 +408,7 @@ sendBtn.onclick = async () => {
       messages: [{ role: "system", content: systemPrompt() }, ...recent],
       stream: true,
       max_tokens: safeMode ? 384 : 640,
-      temperature: adultMode ? 0.8 : 0.7, top_p: 0.9, top_k: 40, penalty_repeat: 1.1,
+      temperature: unfiltered ? 0.8 : 0.7, top_p: 0.9, top_k: 40, penalty_repeat: 1.1,
       chat_template_kwargs: { enable_thinking: false },
       abortSignal: abortCtl.signal,
     });
@@ -441,8 +442,7 @@ function openSheet() {
   const m = modelById(store.get("pocketai.model", ""));
   $("sheetInfo").textContent = m ? `Using: ${m.name} (${m.size})` : "";
   $("safeBtn").textContent = `Safe mode: ${safeMode ? "on (uses less memory, shorter replies)" : "off"}`;
-  adultArmed = false;
-  $("adultBtn").textContent = adultMode ? "🌶️ Adult mode: on (tap to turn off)" : "🌶️ Adult mode: off";
+  $("unfilteredBtn").textContent = `Unfiltered mode: ${unfiltered ? "on" : "off"}`;
   deleteArmed = false;
   $("deleteBtn").textContent = "Delete downloaded model (frees space)";
   $("sheetBg").style.display = "block"; $("sheet").classList.add("open");
@@ -454,12 +454,10 @@ $("closeSheet").onclick = closeSheet;
 $("newBtn").onclick = () => { if (generating) return; messages = []; store.set("pocketai.chat", messages); renderChat(); };
 $("clearBtn").onclick = () => { closeSheet(); $("newBtn").click(); };
 
-let adultArmed = false;
-$("adultBtn").onclick = () => {
-  if (adultMode) { adultMode = false; store.set("pocketai.adult", false); closeSheet(); refreshStatus(); return; }
-  if (!adultArmed) { adultArmed = true; $("adultBtn").textContent = "Tap again to confirm you're 18 or older"; return; }
-  adultMode = true; store.set("pocketai.adult", true); closeSheet(); refreshStatus();
-  notice("🌶️ Adult mode is on. Tip: start a new chat (+) so the AI picks up the new vibe.");
+$("unfilteredBtn").onclick = () => {
+  unfiltered = !unfiltered; store.set("pocketai.unfiltered", unfiltered);
+  $("unfilteredBtn").textContent = `Unfiltered mode: ${unfiltered ? "on" : "off"}`;
+  setTimeout(closeSheet, 350);
 };
 
 $("safeBtn").onclick = async () => {
