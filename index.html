@@ -97,7 +97,7 @@
     <div class="bar"><div id="bar"></div></div>
     <div id="progressText" class="note"></div>
   </div>
-  <p class="note" style="margin-top:18px">Keep the app open while it downloads. Everything stays on your phone.</p>
+  <p class="note" style="margin-top:18px">Keep the app open while it downloads. Everything stays on your phone. Replies take a moment to start, as the AI runs on your phone's own processor.</p>
 </section>
 
 <!-- Chat screen -->
@@ -126,6 +126,7 @@
 <div class="sheet-bg" id="sheetBg"></div>
 <div class="sheet" id="sheet">
   <div class="info" id="sheetInfo"></div>
+  <button id="adultBtn">🌶️ Adult mode: off</button>
   <button id="safeBtn">Safe mode: off</button>
   <button id="switchBtn">Switch AI model</button>
   <button id="clearBtn">Clear this chat</button>
@@ -134,94 +135,110 @@
 </div>
 
 <script type="module">
-// ---------- Offline support ----------
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
-if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
-
+// ===================================================================
+// Pocket AI: a private chat AI that runs on the phone's CPU (llama.cpp
+// compiled to WebAssembly, via the wllama library). No WebGPU, so it
+// avoids Safari's WebGPU memory growth that crashed the earlier version.
+// ===================================================================
+const WL = "https://cdn.jsdelivr.net/npm/@wllama/wllama@4.0.0/";
 const $ = (id) => document.getElementById(id);
 const store = {
   get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
 
-const SYSTEM = "You are Pocket AI, a friendly, helpful assistant running offline on the user's iPhone. Keep answers clear and fairly short unless asked for detail. If you're not sure about a fact, say so.";
+// ---------- Offline support + multi-core speed ----------
+// The service worker keeps the app working offline and adds the headers that
+// let the AI use all CPU cores. The very first visit needs one quick reload
+// for that to kick in.
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("sw.js").then(async () => {
+    await navigator.serviceWorker.ready;
+    if (!window.crossOriginIsolated && !sessionStorage.getItem("pocketai.reloaded")) {
+      sessionStorage.setItem("pocketai.reloaded", "1");
+      location.reload();
+    }
+  }).catch(() => {});
+}
+if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 
-// Model choices, smallest to largest. f16 versions are faster; f32 is the fallback.
-const TIERS = [
-  { key: "best",   name: "Best · Qwen3 1.7B", desc: "Smartest model that runs reliably on your phone", size: "~1.1 GB", rec: true,
-    ids: ["Qwen3-1.7B-q4f16_1-MLC", "Qwen3-1.7B-q4f32_1-MLC", "Qwen2.5-1.5B-Instruct-q4f16_1-MLC", "Qwen2.5-1.5B-Instruct-q4f32_1-MLC"] },
-  { key: "small",  name: "Fast · Llama 3.2 1B", desc: "Quicker replies, a bit less clever", size: "~700 MB",
-    ids: ["Llama-3.2-1B-Instruct-q4f16_1-MLC", "Llama-3.2-1B-Instruct-q4f32_1-MLC"] },
-  { key: "tiny",   name: "Tiny · Qwen3 0.6B", desc: "Fastest, simplest answers, smallest download", size: "~500 MB",
-    ids: ["Qwen3-0.6B-q4f16_1-MLC", "Qwen3-0.6B-q4f32_1-MLC", "Qwen2.5-0.5B-Instruct-q4f16_1-MLC"] },
+// ---------- Models ----------
+const MODELS = [
+  { id: "qwen3-1.7b", name: "Best · Qwen3 1.7B", desc: "Smartest of the three, a bit slower", size: "1.1 GB", rec: true,
+    url: "https://huggingface.co/unsloth/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf" },
+  { id: "llama3.2-1b", name: "Fast · Llama 3.2 1B", desc: "Quicker replies, a bit less clever", size: "810 MB",
+    url: "https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf" },
+  { id: "qwen3-0.6b", name: "Tiny · Qwen3 0.6B", desc: "Fastest, simplest answers, smallest download", size: "400 MB",
+    url: "https://huggingface.co/unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_K_M.gguf" },
 ];
+const modelById = (id) => MODELS.find((m) => m.id === id);
 
-// Memory settings. iOS kills web apps that use too much memory, so we keep the
-// AI's working memory small. If the app got killed mid-reply last time, we
-// automatically drop to "safe mode", which uses even less.
-const NORMAL = { context_window_size: 2048, prefill_chunk_size: 256 };
-const SAFE   = { context_window_size: 1024, prefill_chunk_size: 64 };
+// ---------- Personality ----------
+const SYSTEM = "You are Pocket AI, a friendly, helpful assistant running offline on the user's iPhone. Keep answers clear and fairly short unless asked for detail. If you're not sure about a fact, say so.";
+const SYSTEM_ADULT = "You are Pocket AI, a private assistant running offline on the user's own iPhone. The user is an adult (18+) and has switched on adult mode. In this mode you're casual, cheeky and flirty, you can swear, and you can talk about mature and romantic or sexual topics with the user and play along with adult roleplay when they ask. Everyone in any roleplay or story is an adult; never involve anyone under 18. Keep being helpful with normal questions too.";
+let adultMode = !!store.get("pocketai.adult", false);
+const systemPrompt = () => (adultMode ? SYSTEM_ADULT : SYSTEM);
+
+// ---------- Memory settings ----------
+// If iOS kills the app mid-reply, we notice on the next launch and switch to safe mode.
 let safeMode = !!store.get("pocketai.safe", false);
 let crashedLastTime = !!store.get("pocketai.inflight", false);
 if (crashedLastTime) { safeMode = true; store.set("pocketai.safe", true); store.set("pocketai.inflight", false); }
-const memOpts = () => (safeMode ? SAFE : NORMAL);
-const historyBudget = () => (safeMode ? 1500 : 3500); // characters of past chat sent to the AI
-const isQwen3 = (id) => /^Qwen3-/.test(id || "");
-// Qwen3 can "think out loud" in <think> tags. Hide that and show only the answer.
+const loadOpts = () => ({
+  n_ctx: safeMode ? 1024 : 2048,
+  n_batch: safeMode ? 64 : 256,
+  n_gpu_layers: 0,          // CPU only: avoids the Safari WebGPU memory problem
+  reasoning: false,         // Qwen3: answer directly, no long "thinking" first
+  warmup: false,
+});
+const historyBudget = () => (safeMode ? 1500 : 3500); // characters of past chat the AI sees
+
+// Qwen3 can "think out loud" in <think> tags. Hide that, show only the answer.
 function stripThink(s) {
   s = s.replace(/<think>[\s\S]*?<\/think>\s*/g, "");
   const open = s.indexOf("<think>");
   return open >= 0 ? s.slice(0, open) : s;
 }
 
-let webllm, engine, hasF16 = false, available = [], selected = null, busy = false;
+// ---------- Engine ----------
+let Wllama, wllama = null, loadedId = null, busy = false, selected = null;
 let messages = store.get("pocketai.chat", []);
+const quietLogger = { debug() {}, log() {}, warn: (...a) => console.warn(...a), error: (...a) => console.error(...a) };
+const newEngine = () => new Wllama({ default: WL + "esm/wasm/wllama.wasm" },
+  { allowOffline: true, suppressNativeLog: true, logger: quietLogger });
+
+async function isDownloaded(m) {
+  try {
+    const cm = (wllama || newEngine()).cacheManager;
+    const name = await cm.getNameFromURL(m.url);
+    const size = await cm.getSize(name);
+    if (size <= 0) return false;
+    const meta = await cm.getMetadata(name);
+    return !meta || !meta.originalSize || size === meta.originalSize;
+  } catch { return false; }
+}
 
 function setupWarn(t) { const w = $("setupWarn"); w.textContent = t; w.classList.remove("hidden"); }
 
 async function boot() {
-  if (!navigator.gpu) {
-    setupWarn("This iPhone's browser doesn't have WebGPU turned on, which the AI needs. Make sure you're on iOS 26 or later and opened this in Safari.");
-    $("downloadBtn").textContent = "Not supported here";
-    return;
-  }
   try {
-    const adapter = await navigator.gpu.requestAdapter();
-    hasF16 = !!adapter && adapter.features.has("shader-f16");
-  } catch {}
-
-  try {
-    webllm = await import("https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2/+esm");
+    ({ Wllama } = await import(WL + "esm/index.js"));
   } catch (e) {
+    console.error(e);
     setupWarn("Couldn't load the AI engine. The first time you open the app you need internet. After that it works offline.");
-    $("downloadBtn").textContent = "Try again";
-    $("downloadBtn").disabled = false;
-    $("downloadBtn").onclick = () => location.reload();
+    const b = $("downloadBtn"); b.textContent = "Try again"; b.disabled = false; b.onclick = () => location.reload();
     return;
   }
-
-  const known = new Set(webllm.prebuiltAppConfig.model_list.map((m) => m.model_id));
-  available = TIERS.map((t) => {
-    const order = hasF16 ? t.ids : [...t.ids].reverse();
-    const id = order.find((i) => known.has(i));
-    return id ? { ...t, id } : null;
-  }).filter(Boolean);
-
-  // If a model was downloaded before, go straight to chat (works offline).
-  const saved = store.get("pocketai.model", null);
-  if (saved && available.find((m) => m.id === saved)) {
-    let cached = false;
-    try { cached = await webllm.hasModelInCache(saved); } catch {}
-    if (cached) { startChatUI(); await loadModel(saved, true); return; }
-  }
+  const saved = modelById(store.get("pocketai.model", ""));
+  if (saved && await isDownloaded(saved)) { startChatUI(); await loadModel(saved.id, true); return; }
   renderModelList();
 }
 
-function renderModelList() {
+async function renderModelList() {
   const list = $("modelList");
   list.innerHTML = "";
-  if (!selected) selected = (available.find((m) => m.rec) || available[0])?.id;
-  for (const m of available) {
+  if (!selected || !modelById(selected)) selected = MODELS.find((m) => m.rec).id;
+  for (const m of MODELS) {
     const b = document.createElement("button");
     b.className = "model" + (m.id === selected ? " sel" : "");
     b.innerHTML = `${m.rec ? '<span class="tag">Recommended</span>' : ""}<b>${m.name} · ${m.size}</b><span>${m.desc}</span>`;
@@ -229,53 +246,59 @@ function renderModelList() {
     list.appendChild(b);
   }
   const btn = $("downloadBtn");
-  btn.disabled = !selected;
-  btn.textContent = "Download & start";
+  btn.disabled = false;
+  btn.textContent = (await isDownloaded(modelById(selected))) ? "Start" : "Download & start";
   btn.onclick = () => loadModel(selected, false);
 }
 
 async function loadModel(id, fromCache) {
-  busy = true;
+  const m = modelById(id);
+  busy = true; updateSend();
   const btn = $("downloadBtn");
   btn.disabled = true;
   btn.textContent = fromCache ? "Loading…" : "Downloading…";
   $("progressWrap").classList.remove("hidden");
+  $("setupWarn").classList.add("hidden");
   setStatus(false, "Loading AI…");
   try {
-    if (engine) { try { await engine.unload(); } catch {} }
-    engine = await webllm.CreateMLCEngine(id, {
-      initProgressCallback: (r) => {
-        const pct = Math.round((r.progress || 0) * 100);
+    if (wllama) { try { await wllama.exit(); } catch {} }
+    wllama = newEngine(); loadedId = null;
+    await wllama.loadModelFromUrl(m.url, {
+      ...loadOpts(),
+      progressCallback: ({ loaded, total }) => {
+        const pct = total ? Math.min(100, Math.round((loaded / total) * 100)) : 0;
         $("bar").style.width = pct + "%";
-        $("progressText").textContent = `${pct}% · ${friendly(r.text)}`;
+        $("progressText").textContent = `${pct}% · ${Math.round(loaded / 1048576)} of ${Math.round(total / 1048576)} MB`;
         setStatus(false, `Loading AI… ${pct}%`);
       },
-    }, memOpts());
+    });
+    loadedId = id;
     store.set("pocketai.model", id);
     startChatUI();
-    const m = available.find((x) => x.id === id);
-    setStatus(true, `${m ? m.name.split(" · ")[0] : "AI"} ready${safeMode ? " · safe mode" : ""} · works offline`);
-    if (crashedLastTime) { crashedLastTime = false; notice("The app closed during the last reply, probably from running out of memory. I've switched to safe mode, which uses less memory. Try again."); }
+    refreshStatus();
+    if (crashedLastTime) { crashedLastTime = false; notice("The app closed during the last reply, probably from running out of memory. I've switched on safe mode, which uses less. Try again, and if it still closes, pick the Tiny model from the ⋯ menu."); }
   } catch (e) {
     console.error(e);
     showSetup();
-    const msg = String(e && e.message || e);
-    setupWarn(/memory|out of|device lost|OOM/i.test(msg)
-      ? "Your iPhone ran out of memory for that model. Close other apps or pick a smaller one."
-      : (navigator.onLine ? "Something went wrong loading the AI: " + msg : "You're offline and this model hasn't been downloaded yet. Connect to Wi‑Fi to download it."));
+    const msg = String((e && e.message) || e);
+    setupWarn(!navigator.onLine && !fromCache
+      ? "You're offline and this model hasn't been downloaded yet. Connect to Wi‑Fi to download it."
+      : /memory|OOM|out of|allocate/i.test(msg)
+        ? "Your iPhone ran out of memory loading that model. Close other apps, turn on Safe mode, or pick a smaller one."
+        : "Something went wrong loading the AI: " + msg);
     renderModelList();
   } finally {
-    busy = false;
-    updateSend();
+    busy = false; updateSend();
   }
 }
 
-function friendly(t = "") {
-  if (/Fetching|Loading model from cache|cache/i.test(t)) {
-    const mb = t.match(/(\d+)MB/); return mb ? `${mb[1]} MB done` : "Loading files";
-  }
-  if (/shader|GPU|compil/i.test(t)) return "Warming up";
-  return "Preparing";
+function refreshStatus() {
+  const m = modelById(loadedId);
+  const bits = [`${m ? m.name.split(" · ")[0] : "AI"} ready`];
+  if (adultMode) bits.push("🌶️ adult");
+  if (safeMode) bits.push("safe mode");
+  bits.push("offline");
+  setStatus(!!loadedId, bits.join(" · "));
 }
 
 // ---------- Screens ----------
@@ -303,8 +326,7 @@ function setStatus(on, text) { $("dot").classList.toggle("on", on); $("statusTex
 // ---------- Chat rendering ----------
 function esc(s) { return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 function md(s) {
-  const parts = s.split(/```/);
-  return parts.map((p, i) => {
+  return s.split(/```/).map((p, i) => {
     if (i % 2) return `<pre><code>${esc(p.replace(/^[a-zA-Z0-9+-]*\n/, ""))}</code></pre>`;
     return esc(p).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
   }).join("");
@@ -329,10 +351,10 @@ function addBubble(role, text) {
 
 // ---------- Sending ----------
 const input = $("input"), sendBtn = $("sendBtn");
-let generating = false;
+let generating = false, abortCtl = null;
 
 function updateSend() {
-  sendBtn.disabled = !generating && (!engine || busy || !input.value.trim());
+  sendBtn.disabled = !generating && (!loadedId || busy || !input.value.trim());
   $("sendIcon").innerHTML = generating
     ? '<rect x="7" y="7" width="10" height="10" rx="2" fill="#fff" stroke="none"/>'
     : '<path d="M12 19V5M5 12l7-7 7 7"/>';
@@ -343,79 +365,86 @@ input.addEventListener("input", () => {
 input.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (!sendBtn.disabled) sendBtn.click(); }
 });
+
 sendBtn.onclick = async () => {
-  if (generating) { try { engine.interruptGenerate(); } catch {} return; }
+  if (generating) { try { abortCtl && abortCtl.abort(); } catch {} return; }
   const text = input.value.trim();
-  if (!text || !engine) return;
+  if (!text || !loadedId) return;
   input.value = ""; input.style.height = "auto";
   if (!messages.length) $("chat").innerHTML = "";
   messages.push({ role: "user", content: text });
+  store.set("pocketai.chat", messages);
   addBubble("user", text);
   const bubble = addBubble("assistant", "");
   bubble.classList.add("typing");
+  bubble.innerHTML = "<i style='color:var(--muted)'>Thinking…</i>";
   $("chat").scrollTop = $("chat").scrollHeight;
 
+  // Only send as much recent chat as fits in the AI's working memory.
+  const recent = [];
+  let chars = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    chars += messages[i].content.length;
+    if (recent.length && chars > historyBudget()) break;
+    recent.unshift(messages[i]);
+  }
+  if (recent[0] && recent[0].role === "assistant") recent.shift();
+
   generating = true; updateSend();
-  let reply = "";
+  abortCtl = new AbortController();
+  store.set("pocketai.inflight", true); // if iOS kills us mid-reply, we'll know next launch
+  let raw = "", reply = "", lastPaint = 0;
+  const paint = (force) => {
+    const now = performance.now();
+    if (!force && now - lastPaint < 80) return; // repaint at most ~12x a second
+    lastPaint = now;
+    bubble.innerHTML = reply ? md(reply) : "<i style='color:var(--muted)'>Thinking…</i>";
+    const c = $("chat");
+    if (c.scrollHeight - c.scrollTop - c.clientHeight < 120) c.scrollTop = c.scrollHeight;
+  };
   try {
-    // Only send as much recent chat as fits in the AI's (small) working memory.
-    const recent = [];
-    let chars = 0;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      chars += messages[i].content.length;
-      if (recent.length && chars > historyBudget()) break;
-      recent.unshift(messages[i]);
-    }
-    if (recent[0] && recent[0].role === "assistant") recent.shift();
-    const modelId = store.get("pocketai.model", "");
-    const req = {
-      messages: [{ role: "system", content: SYSTEM }, ...recent],
-      stream: true, temperature: 0.7, max_tokens: safeMode ? 384 : 640,
-    };
-    // Leave a marker: if iOS kills the app mid-reply, we'll know on the next launch.
-    store.set("pocketai.inflight", true);
-    let stream;
-    if (isQwen3(modelId)) {
-      // Ask Qwen3 to answer directly instead of thinking first (faster on a phone).
-      try { stream = await engine.chat.completions.create({ ...req, extra_body: { enable_thinking: false } }); }
-      catch { stream = await engine.chat.completions.create(req); }
-    } else {
-      stream = await engine.chat.completions.create(req);
-    }
-    let raw = "";
+    const stream = await wllama.createChatCompletion({
+      messages: [{ role: "system", content: systemPrompt() }, ...recent],
+      stream: true,
+      max_tokens: safeMode ? 384 : 640,
+      temperature: adultMode ? 0.8 : 0.7, top_p: 0.9, top_k: 40, penalty_repeat: 1.1,
+      chat_template_kwargs: { enable_thinking: false },
+      abortSignal: abortCtl.signal,
+    });
     for await (const chunk of stream) {
       const delta = chunk.choices?.[0]?.delta?.content || "";
-      if (delta) {
-        raw += delta;
-        reply = stripThink(raw).trimStart();
-        bubble.innerHTML = reply ? md(reply) : "<i style='color:var(--muted)'>Thinking…</i>";
-        const c = $("chat");
-        if (c.scrollHeight - c.scrollTop - c.clientHeight < 120) c.scrollTop = c.scrollHeight;
-      }
+      if (delta) { raw += delta; reply = stripThink(raw).trimStart(); paint(false); }
     }
   } catch (e) {
-    console.error(e);
-    const msg = String((e && e.message) || e).slice(0, 300);
-    if (!reply) {
-      reply = /lost|device|memory|OOM|buffer/i.test(msg)
+    const aborted = abortCtl.signal.aborted || (e && /abort/i.test(e.name + " " + e.message));
+    if (!aborted) {
+      console.error(e);
+      const msg = String((e && e.message) || e).slice(0, 300);
+      if (!reply) reply = (/memory|OOM|allocate/i.test(msg)
         ? "I ran out of memory. Close the app fully (swipe it away), reopen it, and turn on Safe mode in the ⋯ menu."
-        : "Sorry, something went wrong.";
-      reply += "\n\nError details: `" + msg.replace(/`/g, "'") + "`";
+        : /kv_cache|context/i.test(msg)
+          ? "This chat got too long for my memory. Tap + to start a new chat."
+          : "Sorry, something went wrong.") + "\n\nError details: `" + msg.replace(/`/g, "'") + "`";
     }
   }
   store.set("pocketai.inflight", false);
   bubble.classList.remove("typing");
-  bubble.innerHTML = md(reply || "…");
+  paint(true);
+  if (!reply) bubble.innerHTML = "…";
   messages.push({ role: "assistant", content: reply });
   store.set("pocketai.chat", messages);
-  generating = false; updateSend();
+  generating = false; abortCtl = null; updateSend();
 };
 
 // ---------- Menu ----------
 function openSheet() {
-  const m = available.find((x) => x.id === store.get("pocketai.model", ""));
+  const m = modelById(store.get("pocketai.model", ""));
   $("sheetInfo").textContent = m ? `Using: ${m.name} (${m.size})` : "";
   $("safeBtn").textContent = `Safe mode: ${safeMode ? "on (uses less memory, shorter replies)" : "off"}`;
+  adultArmed = false;
+  $("adultBtn").textContent = adultMode ? "🌶️ Adult mode: on (tap to turn off)" : "🌶️ Adult mode: off";
+  deleteArmed = false;
+  $("deleteBtn").textContent = "Delete downloaded model (frees space)";
   $("sheetBg").style.display = "block"; $("sheet").classList.add("open");
 }
 function closeSheet() { $("sheetBg").style.display = "none"; $("sheet").classList.remove("open"); }
@@ -423,14 +452,22 @@ $("menuBtn").onclick = openSheet;
 $("sheetBg").onclick = closeSheet;
 $("closeSheet").onclick = closeSheet;
 $("newBtn").onclick = () => { if (generating) return; messages = []; store.set("pocketai.chat", messages); renderChat(); };
+$("clearBtn").onclick = () => { closeSheet(); $("newBtn").click(); };
+
+let adultArmed = false;
+$("adultBtn").onclick = () => {
+  if (adultMode) { adultMode = false; store.set("pocketai.adult", false); closeSheet(); refreshStatus(); return; }
+  if (!adultArmed) { adultArmed = true; $("adultBtn").textContent = "Tap again to confirm you're 18 or older"; return; }
+  adultMode = true; store.set("pocketai.adult", true); closeSheet(); refreshStatus();
+  notice("🌶️ Adult mode is on. Tip: start a new chat (+) so the AI picks up the new vibe.");
+};
+
 $("safeBtn").onclick = async () => {
   closeSheet(); if (generating || busy) return;
   safeMode = !safeMode; store.set("pocketai.safe", safeMode);
-  const id = store.get("pocketai.model", null);
-  if (id) await loadModel(id, true); // reload the AI with the new memory settings
+  if (loadedId) await loadModel(loadedId, true); // reload the AI with the new memory settings
 };
-$("clearBtn").onclick =() => { closeSheet(); $("newBtn").click(); };
-$("switchBtn").onclick = () => {
+$("switchBtn").onclick = async () => {
   closeSheet(); if (generating) return;
   selected = store.get("pocketai.model", selected);
   $("progressWrap").classList.add("hidden"); $("setupWarn").classList.add("hidden");
@@ -439,12 +476,12 @@ $("switchBtn").onclick = () => {
 let deleteArmed = false;
 $("deleteBtn").onclick = async () => {
   if (!deleteArmed) { deleteArmed = true; $("deleteBtn").textContent = "Tap again to delete (you'll need Wi‑Fi to re-download)"; return; }
-  deleteArmed = false; $("deleteBtn").textContent = "Delete downloaded model (frees space)";
+  deleteArmed = false;
   closeSheet();
-  const id = store.get("pocketai.model", null);
-  try { if (engine) await engine.unload(); } catch {}
-  engine = null;
-  try { if (id) await webllm.deleteModelAllInfoInCache(id); } catch {}
+  const m = modelById(store.get("pocketai.model", ""));
+  try { if (wllama) await wllama.exit(); } catch {}
+  try { if (m) await newEngine().cacheManager.delete(m.url); } catch (e) { console.error(e); }
+  wllama = null; loadedId = null;
   store.set("pocketai.model", null);
   $("progressWrap").classList.add("hidden");
   showSetup(); renderModelList();
